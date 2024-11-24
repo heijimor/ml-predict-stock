@@ -1,11 +1,12 @@
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
+
+from app.routers import stock, predict
 
 app = FastAPI()
 
-@app.get("/")
-def read_root():
-    return {"message": "Welcome to FastAPI"}
+app.include_router(stock.router)
+app.include_router(predict.router)
 
-@app.get("/items/{item_id}")
-def read_item(item_id: int, q: str = None):
-    return {"item_id": item_id, "query": q}
+@app.get("/")
+async def root():
+  return {"message": "Hello Bigger Applications!"}
