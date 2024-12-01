@@ -9,7 +9,7 @@ class StockDataResponse(BaseModel):
     close_price: float
 
 @router.get("/stock", tags=["stock"])
-async def get_stock():
+async def train_stock():
     stock_manager = StockManager()
     data = stock_manager.collect("AAPL", "2015-01-01", "2023-01-01")
     scaled_data, scaler = stock_manager.normalize(data)

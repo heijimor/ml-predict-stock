@@ -9,9 +9,10 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 from tensorflow.keras.callbacks import EarlyStopping
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+import json
+from keras.models import load_model as keras_load_model
 
 class StockManager:
-    
   def __init__(self):
     # REQUEST_TIME = Summary('request_processing_seconds', 'Time spent processing request')
     # INFERENCE_COUNT = Counter('inference_count', 'Total number of inferences made')
@@ -32,63 +33,56 @@ class StockManager:
     print(f'Yahoo Close: \n ${data}')
     return data
   
-  def load_model(self, model):
-    # model = models.resnet18(pretrained=False)
-    # model.fc = nn.Linear(model.fc.in_features, 2)
-    # model.load_state_dict(torch.load(model_path))
-    # model.eval()
-    # return model
-    pass
-  
-  # # Função para inferência com monitoramento
-  # @REQUEST_TIME.time()
-  def predict(self, data):
-    # model = self.load_model("saved_model/model_transfer_learning.pth")
+  def load_model(self, model_path, scaler_path):
+    model = keras_load_model(model_path)
+    print(f"Model loaded from {model_path}")
 
-    #     INFERENCE_COUNT.inc()
-    #     prediction = predict(model, image)
-    #     # Exemplo de métrica para monitoramento de acurácia (valor fixo para o exemplo)
-    #     accuracy = 0.9  # Supondo que esta é uma métrica fixa ou calculada de alguma forma
-    #     MODEL_ACCURACY.set(accuracy)
-    #     return prediction
+    # Load the scaler parameters from JSON
+    with open(scaler_path, "r") as f:
+        scaler_params = json.load(f)
+    
+    # Reconstruct the scaler using loaded parameters
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaler.min_ = np.array(scaler_params["min"])
+    scaler.scale_ = np.array(scaler_params["scale"])
+    scaler.data_min_ = np.array(scaler_params["data_min"])
+    scaler.data_max_ = np.array(scaler_params["data_max"])
+    print(f"Scaler loaded and reconstructed from {scaler_path}")
 
-    # logger.info("Image bytes: %s", io.BytesIO(image))
-    # transform = transforms.Compose([
-    #     transforms.Resize((64, 64)),
-    #     transforms.ToTensor(),
-    #     transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
-    # ])
-    # image = transform(image).unsqueeze(0)  # Adicionar dimensão para o batch
-    # logger.info("Image shape: %s", image.shape)
-    # output = model(image)
-    # _, predicted = torch.max(output, 1)
-    # return predicted.item()
-    
-    # ---
-        # Preprocess the data
-    # data = np.array(historical_prices)
-    # scaled_data, scaler = preprocess_data(data)
-    
-    # # Load the trained model
-    # model = tf.keras.models.load_model(settings.MODEL_PATH)
-    
-    # # Prepare input
-    # X_test = np.array([scaled_data[-60:]])
-    # X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
-    
-    # # Predict
-    # prediction = model.predict(X_test)
-    # return scaler.inverse_transform(prediction).tolist()
-    pass
+    return model, scaler
+
+  def predict(self, model, scaler, recent_data, seq_length):
+    scaled_data = scaler.transform(recent_data[['Close']].values)
+    X_recent, _ = self.sequencialize(scaled_data, seq_length)
+    print(f"X_recent \n {X_recent}")
+    predictions = model.predict(X_recent)
+    return scaler.inverse_transform(predictions)
   
   def normalize(self, data):
     scaler = MinMaxScaler(feature_range=(0, 1))
     scaled_data = scaler.fit_transform(data)
     print(f'Scaled_data: \n ${scaled_data}')
+    self.save_scaler(scaler, os.path.join(self.BASE_DIR, '../../models/scaler.json'))
     return scaled_data, scaler
+
+  def save_scaler(self, scaler, path):
+    """Save scaler parameters to a JSON file."""
+    scaler_params = {
+        "min": scaler.min_.tolist(),
+        "scale": scaler.scale_.tolist(),
+        "data_min": scaler.data_min_.tolist(),
+        "data_max": scaler.data_max_.tolist(),
+    }
+    with open(path, "w") as f:
+        json.dump(scaler_params, f)
+    print(f"Scaler parameters saved to {path}")
 
   def sequencialize(self, data, seq_length):
     X, y = [], []
+
+    if len(data) < seq_length:
+      raise ValueError("Insufficient data to create sequences.")
+
     for i in range(seq_length, len(data)):
         X.append(data[i-seq_length:i, 0])
         y.append(data[i, 0])
