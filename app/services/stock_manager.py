@@ -1,8 +1,6 @@
 import yfinance as yf
 import pandas as pd
 import os
-from prometheus_client import start_http_server, Summary, Counter, Gauge, generate_latest
-from prometheus_client import CONTENT_TYPE_LATEST
 from sklearn.preprocessing import MinMaxScaler
 import numpy as np
 from tensorflow.keras.models import Sequential
@@ -11,13 +9,25 @@ from tensorflow.keras.callbacks import EarlyStopping
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 import json
 from keras.models import load_model as keras_load_model
+from datetime import timedelta
+from prometheus_client import CONTENT_TYPE_LATEST
+from prometheus_client import Summary, Counter, Gauge
 
 class StockManager:
+  _instance = None
+
+  def __new__(cls, *args, **kwargs):
+    if not cls._instance:
+        cls._instance = super(StockManager, cls).__new__(cls)
+    return cls._instance
+
   def __init__(self):
-    # REQUEST_TIME = Summary('request_processing_seconds', 'Time spent processing request')
-    # INFERENCE_COUNT = Counter('inference_count', 'Total number of inferences made')
-    # MODEL_ACCURACY = Gauge('model_accuracy', 'Model accuracy over time')
-    self.BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    if not hasattr(self, "initialized"):
+      self.BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+      self.REQUEST_TIME = Summary('request_processing_seconds', 'Time spent processing request')
+      self.INFERENCE_COUNT = Counter('inference_count', 'Total number of inferences made')
+      self.MODEL_ACCURACY = Gauge('model_accuracy', 'Model accuracy over time')
+      self.initialized = True
 
   def collect(
     self,
@@ -25,14 +35,13 @@ class StockManager:
     start_date: str,
     end_date: str
   ) -> pd.DataFrame:
-
     df = yf.download(ticker, start=start_date, end=end_date)
     print(f'Yahoo Downloaded: \n ${df}')
     df.to_csv(os.path.join(self.BASE_DIR, "../../data/raw_data.csv"))
     data = df[['Close']]
     print(f'Yahoo Close: \n ${data}')
     return data
-  
+
   def load_model(self, model_path, scaler_path):
     model = keras_load_model(model_path)
     print(f"Model loaded from {model_path}")
@@ -52,12 +61,18 @@ class StockManager:
     return model, scaler
 
   def predict(self, model, scaler, recent_data, seq_length):
-    scaled_data = scaler.transform(recent_data[['Close']].values)
-    X_recent, _ = self.sequencialize(scaled_data, seq_length)
-    print(f"X_recent \n {X_recent}")
-    predictions = model.predict(X_recent)
-    return scaler.inverse_transform(predictions)
-  
+    with self.REQUEST_TIME.time():
+      self.INFERENCE_COUNT.inc()
+      scaled_data = scaler.transform(recent_data[['Close']].values)
+      X_recent, _ = self.sequencialize(scaled_data, seq_length)
+      print(f"X_recent \n {X_recent}")
+      predictions = model.predict(X_recent)
+      predicted_prices = scaler.inverse_transform(predictions)
+      predicted_prices = predicted_prices.tolist()
+      last_date = recent_data.index[-1]
+      predicted_dates = [last_date + timedelta(days=i) for i in range(1, len(predicted_prices) + 1)]
+      return [{"date": str(date), "price": price[0]} for date, price in zip(predicted_dates, predicted_prices)]
+
   def normalize(self, data):
     scaler = MinMaxScaler(feature_range=(0, 1))
     scaled_data = scaler.fit_transform(data)
@@ -66,15 +81,14 @@ class StockManager:
     return scaled_data, scaler
 
   def save_scaler(self, scaler, path):
-    """Save scaler parameters to a JSON file."""
     scaler_params = {
-        "min": scaler.min_.tolist(),
-        "scale": scaler.scale_.tolist(),
-        "data_min": scaler.data_min_.tolist(),
-        "data_max": scaler.data_max_.tolist(),
+      "min": scaler.min_.tolist(),
+      "scale": scaler.scale_.tolist(),
+      "data_min": scaler.data_min_.tolist(),
+      "data_max": scaler.data_max_.tolist(),
     }
     with open(path, "w") as f:
-        json.dump(scaler_params, f)
+      json.dump(scaler_params, f)
     print(f"Scaler parameters saved to {path}")
 
   def sequencialize(self, data, seq_length):
@@ -100,10 +114,10 @@ class StockManager:
 
   def build(self, input_shape):
     model = Sequential([
-        LSTM(50, return_sequences=True, input_shape=input_shape),
-        LSTM(50, return_sequences=False),
-        Dense(25),
-        Dense(1)
+      LSTM(50, return_sequences=True, input_shape=input_shape),
+      LSTM(50, return_sequences=False),
+      Dense(25),
+      Dense(1)
     ])
     model.compile(optimizer='adam', loss='mean_squared_error')
     print(f'model_build: \n ${model}')
@@ -111,8 +125,6 @@ class StockManager:
   
   def train(self, model, X_train, y_train, X_test, y_test):
     early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
-
-    # Treinamento do modelo
     history = model.fit(
         X_train, y_train,
         validation_data=(X_test, y_test),
@@ -123,15 +135,11 @@ class StockManager:
     print(f'history: \n ${history}')
   
   def evaluate(self, model, scaler, X_test, y_test):
-    # Previsões no conjunto de teste
     predictions = model.predict(X_test)
-    predictions = scaler.inverse_transform(predictions)  # Desnormaliza os dados
+    predictions = scaler.inverse_transform(predictions)
     y_test = scaler.inverse_transform(y_test.reshape(-1, 1))
-
-    # Cálculo das métricas
     mae = mean_absolute_error(y_test, predictions)
     rmse = np.sqrt(mean_squared_error(y_test, predictions))
-
     print(f"MAE: {mae:.4f}")
     print(f"RMSE: {rmse:.4f}")
       
